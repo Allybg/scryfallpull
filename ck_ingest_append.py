@@ -1,13 +1,18 @@
 """
-Ingest Card Kingdom price list into Supabase.
+Append-only Card Kingdom price ingest.
 
-Fetches the CK v2 pricelist and upserts into `ck_prices`.
-scryfall_id is provided directly by the CK API.
+Same as ck_ingest.py, but INSERTs new rows instead of upserting. Use this
+to build a time-series price history (every run = new snapshot rows).
+
+NOTE: requires the unique index `ck_prices_daily_uniq` to be dropped if you
+want to run multiple times per day:
+    DROP INDEX IF EXISTS ck_prices_daily_uniq;
 
 Usage:
-    python ck_ingest.py
+    python ck_ingest_append.py
 """
 
+import datetime
 import os
 import time
 from pathlib import Path
@@ -23,52 +28,7 @@ if not DB_URL:
     raise RuntimeError("SUPABASE_DB_URL not set — check your .env file")
 
 CK_PRICELIST_URL = "https://api.cardkingdom.com/api/v2/pricelist"
-BATCH_SIZE = 1000
 HEADERS = {"User-Agent": "bzaar-pipeline/1.0 (github.com/DaichiOS/bzaar)"}
-
-COPY_SQL = """
-    COPY ck_prices (
-        ck_id, sku, name, variation, edition,
-        is_foil, price_retail, price_buy,
-        qty_retail, qty_buying,
-        nm_price, nm_qty, ex_price, ex_qty,
-        vg_price, vg_qty, g_price, g_qty,
-        scryfall_id, snapshot_date, snapshot_at
-    ) FROM STDIN
-"""
-
-UPSERT_CONFLICT_SQL = """
-    INSERT INTO ck_prices (
-        ck_id, sku, name, variation, edition,
-        is_foil, price_retail, price_buy,
-        qty_retail, qty_buying,
-        nm_price, nm_qty, ex_price, ex_qty,
-        vg_price, vg_qty, g_price, g_qty,
-        scryfall_id, snapshot_date, snapshot_at
-    )
-    SELECT
-        ck_id, sku, name, variation, edition,
-        is_foil, price_retail, price_buy,
-        qty_retail, qty_buying,
-        nm_price, nm_qty, ex_price, ex_qty,
-        vg_price, vg_qty, g_price, g_qty,
-        scryfall_id, snapshot_date, snapshot_at
-    FROM ck_prices_staging
-    ON CONFLICT (ck_id, is_foil, snapshot_date) DO UPDATE SET
-        price_retail = EXCLUDED.price_retail,
-        price_buy    = EXCLUDED.price_buy,
-        qty_retail   = EXCLUDED.qty_retail,
-        qty_buying   = EXCLUDED.qty_buying,
-        nm_price     = EXCLUDED.nm_price,
-        nm_qty       = EXCLUDED.nm_qty,
-        ex_price     = EXCLUDED.ex_price,
-        ex_qty       = EXCLUDED.ex_qty,
-        vg_price     = EXCLUDED.vg_price,
-        vg_qty       = EXCLUDED.vg_qty,
-        g_price      = EXCLUDED.g_price,
-        g_qty        = EXCLUDED.g_qty,
-        scryfall_id  = EXCLUDED.scryfall_id
-"""
 
 
 def fetch_pricelist() -> list[dict]:
@@ -125,23 +85,15 @@ def build_rows(items: list[dict]) -> list[tuple]:
     return rows
 
 
-def upsert_prices(rows: list[tuple], conn):
-    import datetime
-
+def append_prices(rows: list[tuple], conn):
     start = time.time()
     today = datetime.date.today()
     now = datetime.datetime.now(datetime.timezone.utc)
 
     with conn.cursor() as cur:
-        cur.execute("DROP TABLE IF EXISTS ck_prices_staging")
-        cur.execute("""
-            CREATE TEMP TABLE ck_prices_staging
-            (LIKE ck_prices INCLUDING DEFAULTS)
-        """)
-
-        print(f"  Streaming {len(rows):,} rows via COPY...")
+        print(f"  Streaming {len(rows):,} rows via COPY (append-only)...")
         with cur.copy("""
-            COPY ck_prices_staging (
+            COPY ck_prices (
                 ck_id, sku, name, variation, edition,
                 is_foil, price_retail, price_buy,
                 qty_retail, qty_buying,
@@ -153,15 +105,10 @@ def upsert_prices(rows: list[tuple], conn):
             for row in rows:
                 copy.write_row((*row, today, now))
 
-        elapsed = time.time() - start
-        print(f"  COPY done in {elapsed:.1f}s — running upsert...")
-
-        cur.execute(UPSERT_CONFLICT_SQL)
-        cur.execute("DROP TABLE IF EXISTS ck_prices_staging")
         conn.commit()
 
     elapsed = time.time() - start
-    print(f"Done. {len(rows):,} CK price rows upserted in {elapsed:.1f}s")
+    print(f"Done. {len(rows):,} CK price rows inserted in {elapsed:.1f}s")
 
 
 def main():
@@ -171,7 +118,7 @@ def main():
 
     print("Connecting to Supabase...")
     with psycopg.connect(DB_URL, prepare_threshold=None) as conn:
-        upsert_prices(rows, conn)
+        append_prices(rows, conn)
 
 
 if __name__ == "__main__":
