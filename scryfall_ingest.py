@@ -163,7 +163,9 @@ def stream_and_upsert(json_path: Path, conn):
             batch.append(card_to_row(card))
 
             if len(batch) >= BATCH_SIZE:
-                conn.cursor().executemany(UPSERT_SQL, batch)
+                with conn.cursor() as cur:
+                    for row in batch:
+                        cur.execute(UPSERT_SQL, row)
                 conn.commit()
                 total += len(batch)
                 elapsed = time.time() - start
@@ -171,7 +173,9 @@ def stream_and_upsert(json_path: Path, conn):
                 batch.clear()
 
     if batch:
-        conn.cursor().executemany(UPSERT_SQL, batch)
+        with conn.cursor() as cur:
+            for row in batch:
+                cur.execute(UPSERT_SQL, row)
         conn.commit()
         total += len(batch)
 
