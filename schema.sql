@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS ck_prices (
     vg_qty           INTEGER,
     g_price          NUMERIC(10, 2),
     g_qty            INTEGER,
-    scryfall_id      TEXT REFERENCES cards (id),
+    scryfall_id      TEXT,
     snapshot_date    DATE NOT NULL DEFAULT CURRENT_DATE,
     snapshot_at      TIMESTAMPTZ DEFAULT NOW()
 );
